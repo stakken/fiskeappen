@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fiskeappen</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#00aa66">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fiskeappen">
+<style>
+  :root { --bg:#fff; --fg:#111; --muted:#777; --line:#e3e3e3; --accent:#0a6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --fg:#eee; --muted:#999; --line:#2a2a2a; --accent:#2c9; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:480px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:0 0 16px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:24px 0 8px; }
+  input, button { font:inherit; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); width:100%; margin-bottom:8px; }
+  button { background:var(--accent); color:#fff; border:0; cursor:pointer; }
+  button.ghost { background:none; color:var(--muted); border:1px solid var(--line); }
+  .row { display:flex; gap:8px; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { padding:10px 0; border-bottom:1px solid var(--line); }
+  li small { color:var(--muted); display:block; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎣 Fiskeappen</h1>
+
+  <section id="start">
+    <h2>Nytt fiskepass</h2>
+    <input id="lake" placeholder="Sjö" list="lakes" autocomplete="off">
+    <datalist id="lakes"></datalist>
+    <button id="startBtn">Starta pass</button>
+  </section>
+
+  <section id="active" class="hidden">
+    <h2 id="sessionTitle"></h2>
+    <input id="species" placeholder="Art (t.ex. Gädda)" list="speciesList" autocomplete="off">
+    <datalist id="speciesList"></datalist>
+    <input id="lure" placeholder="Drag (t.ex. Wobbler 12cm)" list="lureList" autocomplete="off">
+    <datalist id="lureList"></datalist>
+    <button id="catchBtn">Logga fisk</button>
+    <button id="endBtn" class="ghost">Avsluta pass</button>
+    <ul id="catches"></ul>
+  </section>
+
+  <h2>Tidigare pass</h2>
+  <ul id="history"></ul>
+</main>
+
+<script>
+const KEY = 'fiskeappen';
+const $ = id => document.getElementById(id);
+let db = JSON.parse(localStorage.getItem(KEY) || '{"sessions":[]}');
+const save = () => localStorage.setItem(KEY, JSON.stringify(db));
+const active = () => db.sessions.find(s => !s.end);
+const fmt = iso => new Date(iso).toLocaleString('sv-SE', { dateStyle:'short', timeStyle:'short' });
+
+const WMO = { 0:'Klart', 1:'Mest klart', 2:'Halvklart', 3:'Mulet', 45:'Dimma', 48:'Dimma',
+  51:'Duggregn', 53:'Duggregn', 55:'Duggregn', 61:'Regn', 63:'Regn', 65:'Kraftigt regn',
+  71:'Snö', 73:'Snö', 75:'Kraftigt snöfall', 80:'Skurar', 81:'Skurar', 82:'Kraftiga skurar', 95:'Åska' };
+
+async function getWeather() {
+  try {
+    const pos = await new Promise((res, rej) =>
+      navigator.geolocation.getCurrentPosition(res, rej, { timeout: 8000 }));
+    const { latitude: lat, longitude: lon } = pos.coords;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,wind_speed_10m,pressure_msl,weather_code&wind_speed_unit=ms`;
+    const c = (await (await fetch(url)).json()).current;
+    return { lat, lon, temp: c.temperature_2m, wind: c.wind_speed_10m,
+             pressure: Math.round(c.pressure_msl), desc: WMO[c.weather_code] || '' };
+  } catch { return null; }
+}
+
+function render() {
+  const s = active();
+  $('start').classList.toggle('hidden', !!s);
+  $('active').classList.toggle('hidden', !s);
+  if (s) {
+    $('sessionTitle').textContent = `${s.lake} – sedan ${fmt(s.start)}`;
+    $('catches').innerHTML = s.catches.slice().reverse().map(catchHtml).join('');
+  }
+  const uniq = f => [...new Set(db.sessions.flatMap(f))].filter(Boolean);
+  const opts = a => a.map(v => `<option value="${v}">`).join('');
+  $('lakes').innerHTML = opts(uniq(x => [x.lake]));
+  $('speciesList').innerHTML = opts(uniq(x => x.catches.map(c => c.species)));
+  $('lureList').innerHTML = opts(uniq(x => x.catches.map(c => c.lure)));
+  $('history').innerHTML = db.sessions.filter(x => x.end).reverse().map(x =>
+    `<li><b>${x.lake}</b> – ${x.catches.length} fisk<small>${fmt(x.start)}</small></li>`).join('')
+    || '<li><small>Inga ännu</small></li>';
+}
+
+function catchHtml(c) {
+  const w = c.weather ? `${c.weather.temp}°C, ${c.weather.wind} m/s, ${c.weather.pressure} hPa, ${c.weather.desc}` : 'väder saknas';
+  return `<li><b>${c.species}</b>${c.lure ? ' på ' + c.lure : ''}<small>${fmt(c.time)} · ${w}</small></li>`;
+}
+
+$('startBtn').onclick = () => {
+  const lake = $('lake').value.trim();
+  if (!lake) return $('lake').focus();
+  db.sessions.push({ id: Date.now(), lake, start: new Date().toISOString(), end: null, catches: [] });
+  $('lake').value = '';
+  save(); render();
+};
+
+$('catchBtn').onclick = async () => {
+  const species = $('species').value.trim();
+  if (!species) return $('species').focus();
+  const btn = $('catchBtn'); btn.disabled = true; btn.textContent = 'Hämtar väder…';
+  const weather = await getWeather();
+  active().catches.push({ species, lure: $('lure').value.trim(), time: new Date().toISOString(), weather });
+  $('species').value = '';
+  btn.disabled = false; btn.textContent = 'Logga fisk';
+  save(); render();
+};
+
+$('endBtn').onclick = () => { active().end = new Date().toISOString(); save(); render(); };
+
+render();
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
